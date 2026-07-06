@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI 对话助手</title>
+    <style>
+      @keyframes typing-dots {
+        0%, 20% { opacity: 0.2; }
+        50% { opacity: 1; }
+        80%, 100% { opacity: 0.2; }
+      }
+      .typing-dots {
+        animation: typing-dots 1.4s infinite;
+      }
+      .markdown-body { font-size: 14px; line-height: 1.7; }
+      .markdown-body p { margin-bottom: 8px; }
+      .markdown-body pre { margin: 8px 0; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

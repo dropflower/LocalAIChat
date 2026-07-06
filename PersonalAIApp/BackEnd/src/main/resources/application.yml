@@ -1,0 +1,96 @@
+# ============================================================
+# AI Chat 后端应用配置文件
+# ============================================================
+# 依赖服务：
+#   - MySQL 8.0 (localhost:3306, 数据库: smart_chat)
+#   - Redis 7.x (localhost:6379)
+#   - Ollama (localhost:11434)
+# ============================================================
+
+server:
+  port: 8080
+  # Gzip 压缩：对 JSON 和文本类响应体进行压缩，减少网络传输量
+  # 1KB 以上的响应体才会触发压缩，避免小数据包压缩开销
+  compression:
+    enabled: true
+    mime-types: application/json,text/plain,text/html
+    min-response-size: 1024
+
+spring:
+  application:
+    name: ai-chat-backend
+
+  # ==================== MVC 异步请求超时配置 ====================
+  # SSE 流式对话可能持续数分钟，默认 30s 超时会导致连接被截断
+  mvc:
+    async:
+      request-timeout: 300000    # 5 分钟（毫秒），覆盖 Tomcat 默认的 30s
+
+  # ==================== MySQL 数据源配置 ====================
+  # smart_chat 数据库需提前创建，表结构由 schema.sql 定义
+  datasource:
+    url: jdbc:mysql://localhost:3306/smart_chat?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
+    username: ${MYSQL_USERNAME}
+    password: ${MYSQL_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  # ==================== JPA / Hibernate 配置 ====================
+  # ddl-auto: none — 表结构由 schema.sql 手动管理，不使用 Hibernate 自动建表
+  #          避免生产环境自动 DDL 带来的数据丢失风险
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+        format_sql: true
+
+  # ==================== Redis 配置 ====================
+  # Lettuce 连接池参数：
+  #   max-active: 8   — 最大活跃连接数
+  #   max-idle: 4     — 最大空闲连接数
+  #   min-idle: 1     — 最小空闲连接数（保证至少有一个预热连接）
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      timeout: 3000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 4
+          min-idle: 1
+
+  # ==================== Jackson 序列化配置 ====================
+  # 日期格式化为可读字符串，时区设置为东八区
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+
+# ==================== Ollama AI 服务配置 ====================
+ollama:
+  base-url: http://localhost:11434    # Ollama 默认 API 地址
+  chat-timeout: 120000                # 单次对话超时时间（毫秒），2分钟
+  keep-alive: 24h                     # 模型在内存中的驻留时间
+
+# ==================== 应用业务配置 ====================
+app:
+  # 认证：API Key 优先从环境变量 AI_APP_API_KEY 读取，默认值用于本地开发
+  auth:
+    api-key: ${AI_APP_API_KEY:ai-chat-default-key}
+  # 对话参数
+  chat:
+    max-context-rounds: 20       # 对话上下文窗口大小（轮数），约 20 轮对话
+    max-session-messages: 2000   # 单个会话最大消息数，超出后触发归档
+    session-expire-days: 90      # 会话过期天数，超过后由定时任务自动清理
+
+# ==================== 日志配置 ====================
+# 项目包路径日志级别设为 DEBUG，便于开发调试
+# Spring Web 日志保持 INFO，避免过多请求日志
+logging:
+  level:
+    com.aiapp: DEBUG
+    org.springframework.web: INFO
