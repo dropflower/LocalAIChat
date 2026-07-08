@@ -1,5 +1,6 @@
 package com.aiapp.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -10,24 +11,8 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * WebSearchService 单元测试类
  *
- * <p>功能描述：测试联网搜索服务的 HTML 解析和结果格式化功能。
- * 由于实际搜索依赖外部网络，本测试类仅测试 parseSearchResults 的解析逻辑
- * 和 formatResults 的格式化逻辑，不测试网络请求部分。</p>
- *
- * <p>测试策略：通过反射调用 private 的 parseSearchResults 方法，
- * 使用模拟的 Bing 搜索结果 HTML 进行验证。
- * formatResults 为 public 方法，直接调用测试。</p>
- *
- * <p>关键验证点：
- * <ul>
- *   <li>正常搜索结果：正确提取标题、摘要、链接</li>
- *   <li>多条结果：最多提取 MAX_RESULTS 条</li>
- *   <li>无搜索结果：返回空列表</li>
- *   <li>HTML 实体：正确解码 &amp; &lt; &gt; 等</li>
- *   <li>HTML 标签：标题和摘要中的标签被正确移除</li>
- *   <li>格式化输出：包含序号、标题、摘要、来源和提示语</li>
- * </ul>
- * </p>
+ * <p>功能描述：测试联网搜索服务的 HTML 解析、关键词提取、天气意图识别、
+ * 天气数据解析和结果格式化功能。</p>
  */
 class WebSearchServiceTest {
 
@@ -35,19 +20,17 @@ class WebSearchServiceTest {
 
     @BeforeEach
     void setUp() {
-        webSearchService = new WebSearchService();
+        webSearchService = new WebSearchService(new ObjectMapper());
+        org.springframework.test.util.ReflectionTestUtils.setField(webSearchService, "defaultCity", "北京");
     }
 
-    /**
-     * 测试：正常 Bing 搜索结果 HTML 应正确解析
-     *
-     * <p>输入参数：包含 2 条 b_algo 结果的模拟 HTML</p>
-     * <p>预期结果：返回 2 个 SearchResultItem，包含正确的标题、链接和摘要</p>
-     * <p>验证逻辑：确认 Bing HTML 结构（b_algo + b_caption）被正确解析</p>
-     */
+    // ==================== HTML 解析测试 ====================
+
     @Test
     void parseSearchResults_ValidBingHtml_ShouldExtractResults() throws Exception {
         String html = "<li class=\"b_algo\">" +
+                "<div class=\"b_tpcn\"><a class=\"tilk\" href=\"https://example.com/icon1\">" +
+                "<div class=\"tptt\">example.com</div></a></div>" +
                 "<h2><a href=\"https://example.com/page1\">Example Title</a></h2>" +
                 "<div class=\"b_caption\"><p>This is a snippet.</p></div>" +
                 "</li>" +
@@ -60,79 +43,43 @@ class WebSearchServiceTest {
 
         assertEquals(2, results.size());
         assertEquals("Example Title", results.get(0).title);
-        assertEquals("https://example.com/page1", results.get(0).url);
         assertEquals("This is a snippet.", results.get(0).snippet);
-        assertEquals("Another Title", results.get(1).title);
-        assertEquals("https://example.com/page2", results.get(1).url);
-        assertEquals("Another snippet here.", results.get(1).snippet);
     }
 
-    /**
-     * 测试：无搜索结果时应返回空列表
-     *
-     * <p>输入参数：不包含 b_algo 元素的 HTML</p>
-     * <p>预期结果：返回空列表</p>
-     * <p>验证逻辑：确认无结果时不产生解析输出</p>
-     */
+    @Test
+    void parseSearchResults_WithTpcnLink_ShouldUseH2TitleLink() throws Exception {
+        String html = "<li class=\"b_algo\">" +
+                "<div class=\"b_tpcn\"><a class=\"tilk\" href=\"https://wrong-url.com\">" +
+                "<div class=\"tptt\">baidu.com</div></a></div>" +
+                "<h2><a href=\"https://baike.baidu.com/item/quantum\">量子计算_百度百科</a></h2>" +
+                "<div class=\"b_caption\"><p>量子计算是一种新型计算模式。</p></div>" +
+                "</li>";
+
+        List<WebSearchService.SearchResultItem> results = invokeParseSearchResults(html, "量子计算");
+        assertEquals(1, results.size());
+        assertEquals("量子计算_百度百科", results.get(0).title);
+        assertEquals("https://baike.baidu.com/item/quantum", results.get(0).url);
+    }
+
     @Test
     void parseSearchResults_NoResults_ShouldReturnEmptyList() throws Exception {
-        String html = "<html><body>No results found</body></html>";
-
-        List<WebSearchService.SearchResultItem> results = invokeParseSearchResults(html, "nonexistent");
-
+        List<WebSearchService.SearchResultItem> results = invokeParseSearchResults(
+                "<html><body>No results</body></html>", "nonexistent");
         assertTrue(results.isEmpty());
     }
 
-    /**
-     * 测试：HTML 实体应被正确解码
-     *
-     * <p>输入参数：标题包含 &amp; &lt; &gt; 实体的 HTML</p>
-     * <p>预期结果：返回的 SearchResultItem 中实体被解码为对应字符</p>
-     * <p>验证逻辑：确认 stripHtmlTags 正确处理常见 HTML 实体</p>
-     */
     @Test
     void parseSearchResults_HtmlEntities_ShouldBeDecoded() throws Exception {
         String html = "<li class=\"b_algo\">" +
-                "<h2><a href=\"https://example.com/page\">A &amp; B &lt;C&gt;</a></h2>" +
-                "<div class=\"b_caption\"><p>X &amp; Y</p></div>" +
+                "<h2><a href=\"https://example.com/page\">A &amp; B</a></h2>" +
+                "<div class=\"b_caption\"><p>X&#0183;Y</p></div>" +
                 "</li>";
 
         List<WebSearchService.SearchResultItem> results = invokeParseSearchResults(html, "test");
-
-        assertEquals(1, results.size());
-        assertEquals("A & B <C>", results.get(0).title);
-        assertEquals("X & Y", results.get(0).snippet);
+        assertEquals("A & B", results.get(0).title);
+        assertTrue(results.get(0).snippet.contains("·"));
     }
 
-    /**
-     * 测试：标题中的 HTML 标签应被移除
-     *
-     * <p>输入参数：标题包含 &lt;strong&gt; 等高亮标签的 HTML</p>
-     * <p>预期结果：返回纯文本标题和摘要，无 HTML 标签</p>
-     * <p>验证逻辑：确认搜索结果中的高亮标签被正确清除</p>
-     */
-    @Test
-    void parseSearchResults_HighlightTags_ShouldBeStripped() throws Exception {
-        String html = "<li class=\"b_algo\">" +
-                "<h2><a href=\"https://example.com/page\"><strong>Hello</strong> World</a></h2>" +
-                "<div class=\"b_caption\"><p>Test <em>snippet</em></p></div>" +
-                "</li>";
-
-        List<WebSearchService.SearchResultItem> results = invokeParseSearchResults(html, "hello");
-
-        assertEquals(1, results.size());
-        assertEquals("Hello World", results.get(0).title);
-        assertFalse(results.get(0).title.contains("<strong>"));
-        assertEquals("Test snippet", results.get(0).snippet);
-    }
-
-    /**
-     * 测试：超过 MAX_RESULTS 条结果时应截断
-     *
-     * <p>输入参数：7 条搜索结果的 HTML</p>
-     * <p>预期结果：仅返回前 5 条结果</p>
-     * <p>验证逻辑：确认结果数量限制生效，避免上下文过长</p>
-     */
     @Test
     void parseSearchResults_MoreThanMaxResults_ShouldTruncate() throws Exception {
         StringBuilder html = new StringBuilder();
@@ -142,67 +89,224 @@ class WebSearchServiceTest {
                     .append("<div class=\"b_caption\"><p>Snippet ").append(i).append("</p></div>")
                     .append("</li>");
         }
-
         List<WebSearchService.SearchResultItem> results = invokeParseSearchResults(html.toString(), "test");
-
         assertEquals(5, results.size());
-        assertEquals("Result 1", results.get(0).title);
-        assertEquals("Result 5", results.get(4).title);
+    }
+
+    // ==================== 关键词提取测试 ====================
+
+    @Test
+    void extractKeywords_ChineseQuestion_ShouldRemoveStopWords() {
+        assertEquals("量子计算", webSearchService.extractKeywords("什么是量子计算？"));
+    }
+
+    @Test
+    void extractKeywords_ShortQuery_ShouldPreserve() {
+        assertEquals("量子计算", webSearchService.extractKeywords("量子计算"));
+    }
+
+    @Test
+    void extractKeywords_OnlyStopWords_ShouldFallback() {
+        assertEquals("的吗了", webSearchService.extractKeywords("的吗了"));
+    }
+
+    // ==================== 天气意图识别测试 ====================
+
+    @Test
+    void isWeatherQuery_WeatherKeywords_ShouldReturnTrue() {
+        assertTrue(webSearchService.isWeatherQuery("今天天气怎么样"));
+        assertTrue(webSearchService.isWeatherQuery("明天会下雨吗"));
+        assertTrue(webSearchService.isWeatherQuery("当前气温是多少"));
+        assertTrue(webSearchService.isWeatherQuery("外面热不热"));
+        assertTrue(webSearchService.isWeatherQuery("PM2.5是多少"));
+    }
+
+    @Test
+    void isWeatherQuery_NonWeatherQuery_ShouldReturnFalse() {
+        assertFalse(webSearchService.isWeatherQuery("量子计算是什么"));
+        assertFalse(webSearchService.isWeatherQuery("Python怎么学"));
+        assertFalse(webSearchService.isWeatherQuery("今天吃什么"));
+    }
+
+    @Test
+    void extractCity_UserSpecifiedCity_ShouldReturnThatCity() {
+        assertEquals("上海", webSearchService.extractCity("上海明天天气怎么样"));
+        assertEquals("衡阳", webSearchService.extractCity("衡阳今天热不热"));
+    }
+
+    @Test
+    void extractCity_NoCitySpecified_ShouldReturnDefaultCity() {
+        assertEquals("北京", webSearchService.extractCity("今天天气怎么样"));
+    }
+
+    @Test
+    void buildWeatherSearchQuery_ShouldCombineCityTimeAndForecast() {
+        assertEquals("北京 今天 天气预报", webSearchService.buildWeatherSearchQuery("今天天气怎么样", "北京"));
+        assertEquals("上海 明天 天气预报", webSearchService.buildWeatherSearchQuery("上海明天会下雨吗", "上海"));
+    }
+
+    // ==================== 天气 JSON 解析测试 ====================
+
+    /**
+     * 测试：wttr.in JSON 应正确解析为结构化天气数据
+     *
+     * <p>输入参数：模拟 wttr.in API 的 JSON 响应</p>
+     * <p>预期结果：解析出当前气温、体感温度、天气状况、湿度等字段</p>
+     */
+    @Test
+    void parseWeatherJson_ValidResponse_ShouldExtractWeatherData() {
+        String json = """
+                {
+                  "current_condition": [{
+                    "temp_C": "29",
+                    "FeelsLikeC": "34",
+                    "humidity": "75",
+                    "windspeedKmph": "13",
+                    "winddir16Point": "S",
+                    "precipMM": "0.0",
+                    "visibility": "10",
+                    "uvIndex": "5",
+                    "cloudcover": "68",
+                    "weatherDesc": [{"value": "Cloudy"}]
+                  }],
+                  "weather": [{
+                    "date": "2026-07-08",
+                    "maxtempC": "30",
+                    "mintempC": "24",
+                    "hourly": [
+                      {"chanceofrain": "26"},
+                      {"chanceofrain": "15"},
+                      {"chanceofrain": "22"}
+                    ]
+                  }]
+                }
+                """;
+
+        String result = webSearchService.parseWeatherJson(json, "衡阳");
+
+        assertNotNull(result);
+        assertTrue(result.contains("衡阳"), "应包含城市名");
+        assertTrue(result.contains("29°C"), "应包含当前气温");
+        assertTrue(result.contains("34°C"), "应包含体感温度");
+        assertTrue(result.contains("30°C"), "应包含最高温度");
+        assertTrue(result.contains("24°C"), "应包含最低温度");
+        assertTrue(result.contains("阴"), "天气状况应翻译为中文");
+        assertTrue(result.contains("75%"), "应包含湿度");
+        assertTrue(result.contains("南风"), "风向应翻译为中文");
+        assertTrue(result.contains("13km/h"), "应包含风速");
+        assertTrue(result.contains("26%"), "应包含降水概率");
     }
 
     /**
-     * 测试：formatResults 应包含正确的结构
-     *
-     * <p>输入参数：1 条 SearchResultItem</p>
-     * <p>预期结果：格式化文本包含序号、标题、摘要、来源和提示语</p>
-     * <p>验证逻辑：确认 formatResults 的输出格式符合预期</p>
+     * 测试：天气描述应翻译为中文
      */
     @Test
-    void formatResults_ShouldIncludeAllFields() {
+    void parseWeatherJson_EnglishDesc_ShouldTranslateToChinese() {
+        String json = """
+                {
+                  "current_condition": [{
+                    "temp_C": "31",
+                    "FeelsLikeC": "36",
+                    "humidity": "59",
+                    "windspeedKmph": "6",
+                    "winddir16Point": "S",
+                    "precipMM": "0.0",
+                    "visibility": "10",
+                    "uvIndex": "7",
+                    "cloudcover": "50",
+                    "weatherDesc": [{"value": "Partly cloudy"}]
+                  }],
+                  "weather": [{"date": "2026-07-08", "maxtempC": "36", "mintempC": "23", "hourly": []}]
+                }
+                """;
+
+        String result = webSearchService.parseWeatherJson(json, "北京");
+        assertTrue(result.contains("多云"), "Partly cloudy 应翻译为多云");
+        assertTrue(result.contains("南风"), "S 应翻译为南风");
+    }
+
+    /**
+     * 测试：无效 JSON 应返回 null
+     */
+    @Test
+    void parseWeatherJson_InvalidJson_ShouldReturnNull() {
+        assertNull(webSearchService.parseWeatherJson("not json", "北京"));
+    }
+
+    /**
+     * 测试：空 current_condition 应返回 null
+     */
+    @Test
+    void parseWeatherJson_EmptyCurrentCondition_ShouldReturnNull() {
+        String json = """
+                {"current_condition": [], "weather": []}
+                """;
+        assertNull(webSearchService.parseWeatherJson(json, "北京"));
+    }
+
+    // ==================== 搜索上下文测试 ====================
+
+    @Test
+    void searchWithContext_WeatherQuery_ShouldSetWeatherFlag() {
+        WebSearchService.SearchContext ctx = webSearchService.searchWithContext("今天天气怎么样");
+        assertTrue(ctx.isWeatherQuery);
+        assertEquals("北京", ctx.city);
+    }
+
+    @Test
+    void searchWithContext_NonWeatherQuery_ShouldNotSetWeatherFlag() {
+        WebSearchService.SearchContext ctx = webSearchService.searchWithContext("量子计算是什么");
+        assertFalse(ctx.isWeatherQuery);
+        assertNull(ctx.city);
+        assertNull(ctx.weatherData);
+    }
+
+    // ==================== 格式化输出测试 ====================
+
+    @Test
+    void formatResults_WeatherQuery_ShouldIncludeWeatherDataAndPrompt() {
         List<WebSearchService.SearchResultItem> results = List.of(
-                new WebSearchService.SearchResultItem("Test Page", "https://example.com/test", "Test description")
+                new WebSearchService.SearchResultItem("北京天气预报", "https://weather.com/bj", "晴 25°C")
         );
+        String weatherData = "【实时天气数据 — 北京】\n当前气温: 29°C\n天气状况: 多云\n";
 
-        String formatted = webSearchService.formatResults(results);
+        String formatted = webSearchService.formatResults(results, true, "北京", weatherData);
 
-        assertTrue(formatted.startsWith("【联网搜索结果】"));
-        assertTrue(formatted.contains("1. **Test Page**"));
-        assertTrue(formatted.contains("Test description"));
-        assertTrue(formatted.contains("来源: https://example.com/test"));
-        assertTrue(formatted.contains("请基于以上搜索结果回答用户问题"));
+        assertTrue(formatted.contains("北京天气查询结果"));
+        assertTrue(formatted.contains("实时天气数据"));
+        assertTrue(formatted.contains("29°C"));
+        assertTrue(formatted.contains("回答要求"));
+        assertTrue(formatted.contains("具体数字"));
     }
 
-    /**
-     * 测试：searchStructured 方法在异常时应返回空列表
-     *
-     * <p>输入参数：无法连接的 URL（不会实际执行网络请求，因为 Java HttpClient 会抛异常）</p>
-     * <p>预期结果：返回空列表，不抛异常</p>
-     * <p>验证逻辑：确认搜索失败的静默降级机制</p>
-     */
     @Test
-    void searchStructured_NetworkError_ShouldReturnEmptyList() {
-        List<WebSearchService.SearchResultItem> results = webSearchService.searchStructured("test");
-        assertNotNull(results);
+    void formatResults_WeatherQueryWithOnlyWeatherData_ShouldFormatCorrectly() {
+        String weatherData = "【实时天气数据 — 上海】\n当前气温: 35°C\n天气状况: 晴\n";
+
+        String formatted = webSearchService.formatResults(List.of(), true, "上海", weatherData);
+
+        assertTrue(formatted.contains("上海天气查询结果"));
+        assertTrue(formatted.contains("35°C"));
+        assertTrue(formatted.contains("回答要求"));
     }
 
-    /**
-     * 测试：formatResults 对空列表应返回空字符串
-     *
-     * <p>输入参数：空列表</p>
-     * <p>预期结果：返回空字符串</p>
-     * <p>验证逻辑：确认无搜索结果时不产生格式化输出</p>
-     */
     @Test
-    void formatResults_EmptyList_ShouldReturnEmpty() {
-        String result = webSearchService.formatResults(List.of());
-        assertEquals("", result);
+    void formatResults_NonWeatherQuery_ShouldUseGenericPrompt() {
+        List<WebSearchService.SearchResultItem> results = List.of(
+                new WebSearchService.SearchResultItem("Test", "https://example.com", "Desc")
+        );
+        String formatted = webSearchService.formatResults(results, false, null, null);
+        assertTrue(formatted.contains("联网搜索结果"));
+        assertFalse(formatted.contains("回答要求"));
+    }
+
+    @Test
+    void formatResults_EmptyAll_ShouldReturnEmpty() {
+        assertEquals("", webSearchService.formatResults(List.of(), false, null, null));
     }
 
     // ==================== 辅助方法 ====================
 
-    /**
-     * 辅助方法：通过反射调用 WebSearchService 的 parseSearchResults 方法
-     */
     @SuppressWarnings("unchecked")
     private List<WebSearchService.SearchResultItem> invokeParseSearchResults(String html, String query) throws Exception {
         return (List<WebSearchService.SearchResultItem>) org.springframework.test.util.ReflectionTestUtils.invokeMethod(

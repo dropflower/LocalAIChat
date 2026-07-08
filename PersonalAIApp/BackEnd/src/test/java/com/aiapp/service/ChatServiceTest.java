@@ -1,4 +1,4 @@
-package test.java.com.aiapp.service;
+package com.aiapp.service;
 
 import com.aiapp.model.Message;
 import com.aiapp.model.Session;

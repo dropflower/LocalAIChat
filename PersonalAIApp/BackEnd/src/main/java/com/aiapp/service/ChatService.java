@@ -90,10 +90,18 @@ public class ChatService {
         prefixEvents.add(buildEvent("start", null));
 
         if (enableSearch) {
-            List<WebSearchService.SearchResultItem> searchResults = webSearchService.searchStructured(userMessage);
-            if (!searchResults.isEmpty()) {
-                prefixEvents.add(buildSearchEvent(searchResults));
-                String formattedResults = webSearchService.formatResults(searchResults);
+            WebSearchService.SearchContext searchContext = webSearchService.searchWithContext(userMessage);
+            List<WebSearchService.SearchResultItem> searchResults = searchContext.results;
+            boolean hasResults = !searchResults.isEmpty();
+            boolean hasWeatherData = searchContext.weatherData != null && !searchContext.weatherData.isEmpty();
+
+            if (hasResults || hasWeatherData) {
+                if (hasResults) {
+                    prefixEvents.add(buildSearchEvent(searchResults));
+                }
+                String formattedResults = webSearchService.formatResults(
+                        searchResults, searchContext.isWeatherQuery,
+                        searchContext.city, searchContext.weatherData);
                 finalMessage = "【系统提示】以下是联网搜索结果，请参考：\n\n"
                         + formattedResults + "\n\n"
                         + "【用户问题】" + userMessage;
@@ -334,71 +342,128 @@ public class ChatService {
         messageRepository.save(message);
     }
 
+/**
+ * 根据会话ID构建上下文消息列表
+ * @param sessionId 会话ID
+ * @return 包含角色和内容的消息列表，格式为List<Map<String, String>>
+ */
     private List<Map<String, String>> buildContext(Long sessionId) {
+    // 创建一个新的ArrayList用于存储上下文消息
         List<Map<String, String>> context = new ArrayList<>();
+    // 从数据库中获取按创建时间升序排列的最近消息列表
         List<Message> recentMessages = messageRepository.findBySessionIdOrderByCreatedAtAsc(sessionId);
+    // 计算起始索引，保留最近的maxContextRounds*2条消息
         int startIdx = Math.max(0, recentMessages.size() - maxContextRounds * 2);
+    // 遍历消息列表，从计算出的起始索引开始
         for (int i = startIdx; i < recentMessages.size(); i++) {
+        // 获取当前消息
             Message msg = recentMessages.get(i);
+        // 创建一个新的HashMap用于存储单条消息
             Map<String, String> item = new HashMap<>();
+        // 将消息角色名称和内容（解压后）添加到map中
             item.put("role", msg.getRole().name());
             item.put("content", decompress(msg.getContentCompressed()));
+        // 将map添加到上下文列表中
             context.add(item);
         }
+    // 返回构建好的上下文列表
         return context;
     }
 
+/**
+ * 保存AI助手的回复内容
+ * @param sessionId 会话ID，用于标识当前对话
+ * @param fullContent AI助手的完整回复内容
+ * @Transactional 注解确保方法内的操作是一个事务，保证数据一致性
+ */
     @Transactional
     public void saveAssistantResponse(Long sessionId, String fullContent) {
+    // 保存AI助手的消息，包括角色、内容和预估的token数
         saveMessage(sessionId, Message.MessageRole.assistant, fullContent,
                 estimateTokens(fullContent));
+    // 统计当前会话中的消息总数
         int count = messageRepository.countBySessionId(sessionId);
+    // 更新会话信息，包括消息数量和更新时间
         sessionRepository.findById(sessionId).ifPresent(session -> {
             session.setMessageCount(count);
             session.setUpdatedAt(java.time.LocalDateTime.now());
             sessionRepository.save(session);
         });
+    // 清除Redis缓存中该会话的消息缓存，确保数据一致性
         redisTemplate.delete(CACHE_KEY_PREFIX + sessionId + ":messages");
     }
 
+/**
+ * 使用GZIP算法压缩字符串内容
+ * @param content 需要压缩的字符串内容
+ * @return 压缩后的字节数组，如果压缩失败则返回原始内容的字节数组
+ */
     private byte[] compress(String content) {
         try {
+        // 创建一个字节数组输出流
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        // 使用try-with-resources语句确保GZIPOutputStream正确关闭
             try (GZIPOutputStream gzip = new GZIPOutputStream(bos)) {
+            // 将字符串内容以UTF-8编码写入GZIP输出流
                 gzip.write(content.getBytes(StandardCharsets.UTF_8));
             }
+        // 返回压缩后的字节数组
             return bos.toByteArray();
         } catch (IOException e) {
+        // 记录压缩失败的错误日志
             log.error("压缩失败", e);
+        // 如果压缩失败，返回原始内容的字节数组
             return content.getBytes(StandardCharsets.UTF_8);
         }
     }
 
+/**
+ * 解压缩字节数组的方法
+ * @param compressed 被压缩的字节数组
+ * @return 解压后的字符串，如果输入为null则返回空字符串
+ */
     private String decompress(byte[] compressed) {
+    // 检查输入是否为null，如果是则返回空字符串
         if (compressed == null) return "";
         try {
+        // 创建字节数组输入流，用于读取压缩数据
             ByteArrayInputStream bis = new ByteArrayInputStream(compressed);
+        // 使用try-with-resources语句创建GZIP输入流，确保资源自动关闭
             try (GZIPInputStream gzip = new GZIPInputStream(bis)) {
+            // 读取所有字节并转换为UTF-8编码的字符串返回
                 return new String(gzip.readAllBytes(), StandardCharsets.UTF_8);
             }
         } catch (IOException e) {
+        // 如果发生IO异常，将原始字节数组直接转换为UTF-8字符串返回
             return new String(compressed, StandardCharsets.UTF_8);
         }
     }
 
+/**
+ * 估算文本中的token数量
+ * @param text 需要估算token的文本字符串
+ * @return 计算得到的token数量
+ */
     private int estimateTokens(String text) {
+        // 如果输入文本为null或空字符串，直接返回0
         if (text == null || text.isEmpty()) return 0;
-        int chineseChars = 0;
-        int otherChars = 0;
+        int chineseChars = 0;    // 中文字符计数器
+        int otherChars = 0;      // 其他字符计数器
+        // 遍历文本中的每个字符
         for (char c : text.toCharArray()) {
+            // 判断字符是否属于中日韩统一表意文字区块
             if (Character.UnicodeBlock.of(c) == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS
+                    // 或者属于中日韩统一表意文字扩展A区块
                     || Character.UnicodeBlock.of(c) == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A
+                    // 或者属于中日韩兼容表意文字区块
                     || Character.UnicodeBlock.of(c) == Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS) {
-                chineseChars++;
+                chineseChars++;    // 中文字符计数加1
             } else {
-                otherChars++;
+                otherChars++;      // 其他字符计数加1
             }
         }
+        // 根据中文字符和其他字符的数量计算token总数
+        // 中文字符按1.5个字符算1个token，其他字符按4个字符算1个token
         return (int) (chineseChars / 1.5 + otherChars / 4.0);
     }
 }

@@ -9,16 +9,17 @@
 
 server:
   port: 8080
-  # Gzip 压缩：对 JSON 和文本类响应体进行压缩，减少网络传输量
-  # 1KB 以上的响应体才会触发压缩，避免小数据包压缩开销
+  # 压缩已关闭：Tomcat 压缩管线会在 Content-Type 判定前插入缓冲层，
+  # 导致 SSE (text/event-stream) 响应被缓冲，前端收不到流式数据。
+  # 生产环境压缩应由 Nginx 等反向代理处理。
   compression:
-    enabled: true
-    mime-types: application/json,text/plain,text/html
-    min-response-size: 1024
+    enabled: false
 
 spring:
   application:
     name: ai-chat-backend
+  profiles:
+    active: dev
 
   # ==================== MVC 异步请求超时配置 ====================
   # SSE 流式对话可能持续数分钟，默认 30s 超时会导致连接被截断
@@ -30,8 +31,8 @@ spring:
   # smart_chat 数据库需提前创建，表结构由 schema.sql 定义
   datasource:
     url: jdbc:mysql://localhost:3306/smart_chat?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
-    username: ${MYSQL_USERNAME}
-    password: ${MYSQL_PASSWORD}
+    username: ${spring.mysql.username}
+    password: ${spring.mysql.password}
     driver-class-name: com.mysql.cj.jdbc.Driver
 
   # ==================== JPA / Hibernate 配置 ====================
@@ -86,6 +87,9 @@ app:
     max-context-rounds: 20       # 对话上下文窗口大小（轮数），约 20 轮对话
     max-session-messages: 2000   # 单个会话最大消息数，超出后触发归档
     session-expire-days: 90      # 会话过期天数，超过后由定时任务自动清理
+  # 搜索参数
+  search:
+    default-city: 北京           # 天气查询默认城市（用户未指定地点时使用）
 
 # ==================== 日志配置 ====================
 # 项目包路径日志级别设为 DEBUG，便于开发调试

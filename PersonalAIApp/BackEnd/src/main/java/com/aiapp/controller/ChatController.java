@@ -3,6 +3,7 @@ package com.aiapp.controller;
 import com.aiapp.model.ApiResponse;
 import com.aiapp.model.ChatRequest;
 import com.aiapp.service.ChatService;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -69,7 +70,7 @@ public class ChatController {
      * @return SseEmitter SSE 流式响应
      */
     @PostMapping(value = "/completions", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter chatCompletions(@RequestBody ChatRequest request) {
+    public SseEmitter chatCompletions(@RequestBody ChatRequest request, HttpServletResponse response) {
         if (request.getModelName() == null || request.getModelName().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "模型名称不能为空");
         }
@@ -78,6 +79,12 @@ public class ChatController {
         }
         log.info("收到对话请求 - sessionId: {}, model: {}, deepThink: {}, search: {}",
                 request.getSessionId(), request.getModelName(), request.isDeepThink(), request.isEnableSearch());
+
+        // 禁用 Tomcat 输出缓冲，确保 SSE 事件逐个发送到客户端
+        // 不设置此项，Tomcat 会缓冲数据直到缓冲区满才刷新，导致前端收到空文字
+        response.setBufferSize(0);
+        response.setHeader("Cache-Control", "no-cache, no-transform");
+        response.setHeader("X-Accel-Buffering", "no");
 
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT);
 
